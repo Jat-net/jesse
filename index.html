@@ -92,6 +92,7 @@ button.action:hover,button.secondary:hover,.qty button:hover{filter:brightness(1
 <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
 <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
 <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-firestore.js"></script>
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-functions.js"></script>
 </head>
 <body><div id="accountGate" class="account-gate"><div class="gate-box"><h2>Jesse Cards Account Required</h2><p class="small">Create an account or log in before using Jesse Cards. Your coins, cards, games, and trades are tied to your account.</p><input id="loginName" placeholder="Name" autocomplete="name"><input id="loginEmail" type="email" placeholder="Email" autocomplete="email"><input id="loginPassword" type="password" placeholder="Password (6+ characters)" autocomplete="current-password"><div class="gate-actions"><button type="button" class="secondary" id="loginBtn">Log In</button><button type="button" class="action" id="registerBtn">Create Account</button></div><div id="gateError" class="gate-error"></div></div></div>
 <div class="app">
@@ -157,12 +158,13 @@ const firebaseConfig = {
   appId:"1:1057024114282:web:2891184f2908e4aff65413"
 };
 
-let firebaseReady=false,auth=null,db=null,currentUser=null;
+let firebaseReady=false,auth=null,db=null,functions=null,currentUser=null;
 try{
   if(window.firebase){
     firebase.initializeApp(firebaseConfig);
     auth=firebase.auth();
     db=firebase.firestore();
+    functions=firebase.functions();
     firebaseReady=true;
   }
 }catch(e){console.error(e)}
