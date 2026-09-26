@@ -174,9 +174,45 @@ bc.onmousemove=e=>{let r=bc.getBoundingClientRect();bat=(e.clientX-r.left)/r.wid
 function brickTick(){if(!brickRun)return;ball.x+=ball.vx;ball.y+=ball.vy;if(ball.x<0||ball.x>300)ball.vx*=-1;if(ball.y<0)ball.vy*=-1;if(ball.y>170){brickRun=false;return}if(ball.y>155&&ball.x>bat&&ball.x<bat+50)ball.vy=-Math.abs(ball.vy);br.forEach(o=>{if(o.on&&ball.x>o.x&&ball.x<o.x+34&&ball.y>o.y&&ball.y<o.y+14){o.on=0;ball.vy*=-1;let n=+$('brickScore').textContent+1;$('brickScore').textContent=n;if(n%10===0){coins+=50;save();syncCloud();msg('+50 Jesse Coins from Brick Breaker')}}});bx.clearRect(0,0,300,180);br.filter(o=>o.on).forEach(o=>{bx.fillStyle='#668aa0';bx.fillRect(o.x,o.y,34,14)});bx.fillStyle='#eee3cc';bx.fillRect(bat,165,50,6);bx.beginPath();bx.arc(ball.x,ball.y,5,0,Math.PI*2);bx.fill()}
 $('brickStart').onclick=brickReset;brickReset();setInterval(brickTick,16);
 
-function closeGameCard(card){card.classList.remove('fullscreen-game');const x=card.querySelector('.game-close');if(x)x.remove()}
-function openGameCard(card){if(card.classList.contains('fullscreen-game'))return;card.classList.add('fullscreen-game');let x=document.createElement('button');x.className='game-close';x.textContent='✕ Close Game';x.onclick=e=>{e.stopPropagation();closeGameCard(card)};card.appendChild(x);if(card.dataset.game==='brick')brickReset()}
-document.querySelectorAll('.game[data-game]').forEach(card=>{card.addEventListener('click',e=>{if(e.target.closest('button,input,textarea,canvas'))return;openGameCard(card)});const b=card.querySelector('[data-game-full]');if(b)b.onclick=e=>{e.stopPropagation();openGameCard(card)}});
+function closeGameCard(card){
+  card.classList.remove('fullscreen-game');
+  const close=card.querySelector('.game-close');
+  if(close) close.remove();
+}
+function openGameCard(card){
+  if(!card || card.classList.contains('fullscreen-game')) return;
+  card.classList.add('fullscreen-game');
+  const close=document.createElement('button');
+  close.type='button';
+  close.className='game-close';
+  close.textContent='✕ Close Game';
+  close.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();closeGameCard(card);});
+  card.appendChild(close);
+  if(card.dataset.game==='snake') snakeReset();
+  if(card.dataset.game==='brick') brickReset();
+}
+
+// Centralized click handling. This keeps controls working even after parts of the UI are re-rendered.
+document.addEventListener('click',function(e){
+  const full=e.target.closest('[data-game-full]');
+  if(full){
+    e.preventDefault();
+    e.stopPropagation();
+    openGameCard(full.closest('.game'));
+    return;
+  }
+  const game=e.target.closest('.game[data-game]');
+  if(game && !e.target.closest('button,input,textarea,canvas,a')){
+    openGameCard(game);
+  }
+},true);
+
+// Make every normal button explicitly non-submit and provide a visible failure message instead of silently dying.
+document.querySelectorAll('button').forEach(function(button){button.type='button'});
+window.addEventListener('error',function(e){
+  console.error(e.error||e.message);
+  if(typeof msg==='function') msg('A button error occurred. Check the browser console for details.');
+});
 
 initAuth();
 save();renderPacks();
