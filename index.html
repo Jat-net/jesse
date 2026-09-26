@@ -25,7 +25,7 @@ h1,h2,h3{margin-top:0}
 .subtitle,.small{color:var(--muted);font-size:12px}
 .msg{min-height:22px;color:var(--gold);font-size:13px;text-align:right}
 .section{display:block}
-.hidden{display:none!important}
+.hidden{display:none!important}.account-gate{position:fixed;inset:0;background:rgba(10,9,7,.97);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px}.account-gate .gate-box{width:min(440px,100%);background:#211d17;border:1px solid #51483b;border-radius:16px;padding:28px;box-shadow:0 20px 80px rgba(0,0,0,.55)}.account-gate input{width:100%;margin:6px 0;padding:12px;border-radius:8px;border:1px solid #51483b;background:#15130f;color:#eee3cc}.gate-actions{display:flex;gap:8px;margin-top:12px}.gate-actions button{flex:1;padding:11px;border-radius:8px;border:1px solid #51483b}.gate-error{min-height:20px;color:#f0c65a;font-size:12px;margin-top:8px}
 .packs,.game-grid,.card-grid{display:grid;gap:14px}
 .packs{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
 .game-grid{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
@@ -93,7 +93,7 @@ button.action:hover,button.secondary:hover,.qty button:hover{filter:brightness(1
 <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
 <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-firestore.js"></script>
 </head>
-<body>
+<body><div id="accountGate" class="account-gate"><div class="gate-box"><h2>Jesse Cards Account Required</h2><p class="small">Create an account or log in before using Jesse Cards. Your coins, cards, games, and trades are tied to your account.</p><input id="loginName" placeholder="Name" autocomplete="name"><input id="loginEmail" type="email" placeholder="Email" autocomplete="email"><input id="loginPassword" type="password" placeholder="Password (6+ characters)" autocomplete="current-password"><div class="gate-actions"><button type="button" class="secondary" id="loginBtn">Log In</button><button type="button" class="action" id="registerBtn">Create Account</button></div><div id="gateError" class="gate-error"></div></div></div>
 <div class="app">
 <aside class="sidebar">
   <div class="logo">JESSE CARDS</div>
@@ -184,19 +184,24 @@ const packs=[{id:"starter",name:"Starter Pack",cost:100,odds:"Common 45% · Unco
 const cardMeta={};
 packs.forEach(p=>p.pool.forEach(c=>cardMeta[c.label]=c));
 
-let coins=Number(localStorage.getItem("jesseCoins")||500);
+let coins=0;
 let inventory={};
-try{inventory=JSON.parse(localStorage.getItem("jesseInventory")||"{}")||{}}catch(e){inventory={}}
 let currentPack=null,queue=[],index=0;
 let profileUnsub=null,tradeUnsubs=[],tradeChatUnsub=null;
 window.jessePlayers=[];
 
-function message(t){$("msg").textContent=t;clearTimeout(message.timer);message.timer=setTimeout(()=>{$("msg").textContent=""},3000)}
-function save(){localStorage.setItem("jesseCoins",String(coins));localStorage.setItem("jesseInventory",JSON.stringify(inventory));$("coinBalance").textContent=coins.toLocaleString()}
+function message(t){$("msg").textContent=t;clearTimeout(message.timer);message.timer=setTimeout(()=>$("msg").textContent="",3500)}
+function save(){
+  $("coinBalance").textContent=coins.toLocaleString();
+}
 function weighted(pool){let n=Math.random()*pool.reduce((a,x)=>a+x.weight,0);for(const x of pool){if(n<x.weight)return x;n-=x.weight}return pool[pool.length-1]}
 function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 function cardValue(label){const c=cardMeta[label];return c?cardSellValue[c.rarity]:0}
 function totalCardsValue(cards){return Object.entries(cards||{}).reduce((n,[k,v])=>n+cardValue(k)*Number(v||0),0)}
+async function callFn(name,data={}){
+  if(!firebaseReady||!currentUser)throw new Error("You must be logged in.");
+  return firebase.functions().httpsCallable(name)(data);
+}
 
 function setPage(page){
   document.querySelectorAll(".section").forEach(s=>s.classList.add("hidden"));
@@ -221,12 +226,15 @@ function updatePrice(){
   const n=Math.max(1,Math.floor(Number($("qty").value)||1)),cost=n*currentPack.cost;
   $("eachCost").textContent=currentPack.cost;$("totalCost").textContent=cost.toLocaleString();$("afterCost").textContent=Math.max(0,coins-cost).toLocaleString();
 }
-function openPacks(){
+async function openPacks(){
   if(!currentPack)return;
-  const n=Math.max(1,Math.floor(Number($("qty").value)||1)),cost=n*currentPack.cost;
+  const n=Math.max(1,Math.min(50,Math.floor(Number($("qty").value)||1))),cost=n*currentPack.cost;
   if(cost>coins){message("Not enough Jesse Coins. Play a game to earn more.");return}
-  coins-=cost;queue=[];for(let i=0;i<n;i++){const c=weighted(currentPack.pool);queue.push(c);inventory[c.label]=(inventory[c.label]||0)+1}
-  save();cloudSync();index=0;$("qtyPanel").classList.add("hidden");$("stagePanel").classList.remove("hidden");showCard();
+  try{
+    const r=await callFn("openPack",{packId:currentPack.id,quantity:n});
+    const d=r.data; coins=Number(d.coins||0); inventory=d.cards||{}; queue=(d.opened||[]).map(c=>cardMeta[c.label]||c);
+    save();index=0;$("qtyPanel").classList.add("hidden");$("stagePanel").classList.remove("hidden");showCard();
+  }catch(e){console.error(e);message(e.message||"The pack could not be opened.")}
 }
 function showCard(){
   const c=queue[index];$("progress").textContent=`Card ${index+1} of ${queue.length}`;$("stageCard").classList.remove("flipped");
@@ -243,28 +251,30 @@ function renderCollection(){
     return `<div class="card"><div class="card-head"><b>${esc(c.label)}</b><span class="rarity" style="color:${rarityColor[c.rarity]}">${c.rarity.toUpperCase()}</span></div><div class="art">ART</div><div class="flavor">${esc(c.flavor)}</div><span class="count">x${inventory[k]}</span><div class="small">Sell value: ${v} Jesse Coins</div><button type="button" class="sell-btn" data-sell="${encodeURIComponent(k)}">Sell 1 · +${v}</button></div>`
   }).join(""):"<div class='empty'>You do not have any cards yet. Open a pack to start your collection.</div>";
 }
-function sellCard(k){
+async function sellCard(k){
   if(!inventory[k]){message("You do not own that card.");return}
-  const c=cardMeta[k];inventory[k]--;if(inventory[k]<=0)delete inventory[k];coins+=cardSellValue[c.rarity];save();cloudSync();renderCollection();message("Sold "+c.label+" for "+cardSellValue[c.rarity]+" Jesse Coins.");
+  try{
+    const r=await callFn("sellCard",{card:k,quantity:1});const d=r.data;coins=Number(d.coins||0);inventory=d.cards||{};save();renderCollection();message("Sold "+k+" for "+cardValue(k)+" Jesse Coins.");
+  }catch(e){console.error(e);message(e.message||"The card could not be sold.")}
 }
 
 /* Snake */
 const sc=$("snakeCanvas"),sx=sc.getContext("2d");
 let snake=[],food={x:15,y:15},dir={x:1,y:0},score=0,snakeRunning=true;
-function snakeReset(){snake=[{x:10,y:10},{x:9,y:10},{x:8,y:10}];food={x:15,y:15};dir={x:1,y:0};score=0;snakeRunning=true;$("snakeScore").textContent="0";snakeDraw()}
+function snakeReset(){if(!currentUser){return}snake=[{x:10,y:10},{x:9,y:10},{x:8,y:10}];food={x:15,y:15};dir={x:1,y:0};score=0;snakeRunning=true;$("snakeScore").textContent="0";snakeDraw()}
 function snakeDraw(){sx.clearRect(0,0,300,300);sx.fillStyle="#62a46f";snake.forEach(s=>sx.fillRect(s.x*15,s.y*15,14,14));sx.fillStyle="#d99b54";sx.fillRect(food.x*15,food.y*15,14,14)}
-function snakeTick(){if(!snakeRunning)return;const h={x:snake[0].x+dir.x,y:snake[0].y+dir.y};if(h.x<0||h.y<0||h.x>=20||h.y>=20||snake.some(s=>s.x===h.x&&s.y===h.y)){snakeRunning=false;return}snake.unshift(h);if(h.x===food.x&&h.y===food.y){score++;$("snakeScore").textContent=score;if(score%5===0){coins+=25;save();cloudSync();message("+25 Jesse Coins from Snake")}do{food={x:Math.floor(Math.random()*20),y:Math.floor(Math.random()*20)}}while(snake.some(s=>s.x===food.x&&s.y===food.y))}else snake.pop();snakeDraw()}
+function snakeTick(){if(!snakeRunning)return;const h={x:snake[0].x+dir.x,y:snake[0].y+dir.y};if(h.x<0||h.y<0||h.x>=20||h.y>=20||snake.some(s=>s.x===h.x&&s.y===h.y)){snakeRunning=false;return}snake.unshift(h);if(h.x===food.x&&h.y===food.y){score++;$("snakeScore").textContent=score;if(score%5===0){claimReward("snake",25)}do{food={x:Math.floor(Math.random()*20),y:Math.floor(Math.random()*20)}}while(snake.some(s=>s.x===food.x&&s.y===food.y))}else snake.pop();snakeDraw()}
 
 /* Block Blast */
 let blocks=Array(64).fill(0);
 function drawBlocks(){$("blockBoard").innerHTML=blocks.map((v,i)=>`<button type="button" data-block="${i}" style="width:28px;height:28px;border:0;border-radius:3px;background:${v?"#547c91":"#29231b"}"></button>`).join("")}
-function blockClear(){const row=Math.floor(Math.random()*8);for(let x=0;x<8;x++)blocks[row*8+x]=0;const n=Number($("blockScore").textContent)+1;$("blockScore").textContent=n;if(n%3===0){coins+=20;save();cloudSync();message("+20 Jesse Coins from Block Blast")}drawBlocks()}
+function blockClear(){if(!currentUser){message("Log in first.");return}const row=Math.floor(Math.random()*8);for(let x=0;x<8;x++)blocks[row*8+x]=0;const n=Number($("blockScore").textContent)+1;$("blockScore").textContent=n;if(n%3===0){claimReward("block",20)}drawBlocks()}
 
 /* Brick Breaker */
 const bc=$("brickCanvas"),bx=bc.getContext("2d");let br=[],ball={x:150,y:150,vx:2.2,vy:-2.2},bat=125,brickRun=false;
-function brickReset(){br=[];for(let y=0;y<3;y++)for(let x=0;x<8;x++)br.push({x:x*37+2,y:y*18+2,on:1});ball={x:150,y:150,vx:2.2,vy:-2.2};bat=125;brickRun=true;$("brickScore").textContent="0";drawBrick()}
+function brickReset(){if(!currentUser){return}br=[];for(let y=0;y<3;y++)for(let x=0;x<8;x++)br.push({x:x*37+2,y:y*18+2,on:1});ball={x:150,y:150,vx:2.2,vy:-2.2};bat=125;brickRun=true;$("brickScore").textContent="0";drawBrick()}
 function drawBrick(){bx.clearRect(0,0,300,180);br.filter(o=>o.on).forEach(o=>{bx.fillStyle="#668aa0";bx.fillRect(o.x,o.y,34,14)});bx.fillStyle="#eee3cc";bx.fillRect(bat,165,50,6);bx.beginPath();bx.arc(ball.x,ball.y,5,0,Math.PI*2);bx.fill()}
-function brickTick(){if(!brickRun)return;ball.x+=ball.vx;ball.y+=ball.vy;if(ball.x<5||ball.x>295)ball.vx*=-1;if(ball.y<5)ball.vy*=-1;if(ball.y>180){brickRun=false;return}if(ball.y>155&&ball.x>bat&&ball.x<bat+50)ball.vy=-Math.abs(ball.vy);for(const o of br){if(o.on&&ball.x>o.x&&ball.x<o.x+34&&ball.y>o.y&&ball.y<o.y+14){o.on=0;ball.vy*=-1;const n=Number($("brickScore").textContent)+1;$("brickScore").textContent=n;if(n%10===0){coins+=50;save();cloudSync();message("+50 Jesse Coins from Brick Breaker")}break}}drawBrick()}
+function brickTick(){if(!brickRun)return;ball.x+=ball.vx;ball.y+=ball.vy;if(ball.x<5||ball.x>295)ball.vx*=-1;if(ball.y<5)ball.vy*=-1;if(ball.y>180){brickRun=false;return}if(ball.y>155&&ball.x>bat&&ball.x<bat+50)ball.vy=-Math.abs(ball.vy);for(const o of br){if(o.on&&ball.x>o.x&&ball.x<o.x+34&&ball.y>o.y&&ball.y<o.y+14){o.on=0;ball.vy*=-1;const n=Number($("brickScore").textContent)+1;$("brickScore").textContent=n;if(n%10===0){claimReward("brick",50)}break}}drawBrick()}
 
 /* Fullscreen games */
 function openGame(card){
@@ -276,20 +286,13 @@ function openGame(card){
 }
 function closeGame(card){if(!card)return;card.classList.remove("fullscreen-game");const b=card.querySelector("[data-close-game]");if(b)b.remove()}
 
-/* Firebase */
-function cloudSync(){
-  if(!firebaseReady||!currentUser)return Promise.resolve();
-  return db.collection("users").doc(currentUser.uid).set({
-    uid:currentUser.uid,name:currentUser.displayName||currentUser.email.split("@")[0],
-    email:currentUser.email,cards:inventory,coins:coins,online:true,lastSeen:firebase.firestore.FieldValue.serverTimestamp()
-  },{merge:true}).catch(e=>{console.error(e);message("Cloud sync failed. Check your Firebase rules.")});
-}
+/* Firebase / trusted server */
 async function loadCloud(){
   if(!firebaseReady||!currentUser)return;
   try{
-    const s=await db.collection("users").doc(currentUser.uid).get();
-    if(s.exists){const d=s.data();if(d.cards)inventory=d.cards;if(typeof d.coins==="number")coins=d.coins;save();renderCollection()}
-  }catch(e){console.error(e);message("Could not load your cloud data.")}
+    const r=await callFn("getState");
+    const d=r.data||{}; coins=Number(d.coins||0); inventory=d.cards||{}; save(); renderCollection();
+  }catch(e){console.error(e);message(e.message||"Could not load your account.")}
 }
 function renderPlayers(){
   const arr=window.jessePlayers||[];
@@ -301,15 +304,20 @@ function renderPlayers(){
 function watchPlayers(){
   if(profileUnsub)profileUnsub();
   if(!firebaseReady||!currentUser)return;
-  profileUnsub=db.collection("users").where("online","==",true).onSnapshot(s=>{
+  profileUnsub=db.collection("profiles").where("online","==",true).onSnapshot(s=>{
     window.jessePlayers=s.docs.map(d=>({id:d.id,...d.data()})).filter(p=>p.id!==currentUser.uid);
     renderPlayers();
   },e=>{console.error(e);message("Could not load logged-in players.")});
 }
+async function claimReward(game,amount){
+  try{
+    const r=await callFn("claimReward",{game,amount});
+    coins=Number(r.data.coins||coins);save();message(`+${amount} Jesse Coins from ${game}`);
+  }catch(e){console.error(e);message(e.message||"Reward was not granted.")}
+}
 async function offerTrade(targetId){
   if(!currentUser){message("Log in first.");setPage("account");return}
-  const p=(window.jessePlayers||[]).find(x=>x.id===targetId);if(!p){message("Player is no longer online.");return}
-  try{const ref=await db.collection("trades").add({from:currentUser.uid,to:targetId,fromName:currentUser.displayName||currentUser.email,toName:p.name||"Player",offered:[],requested:[],status:"pending",createdAt:firebase.firestore.FieldValue.serverTimestamp(),updatedAt:firebase.firestore.FieldValue.serverTimestamp()});await openTrade(ref.id)}catch(e){console.error(e);message("Could not create the trade. Check your Firebase rules.")}
+  try{const r=await callFn("createTrade",{targetId});await openTrade(r.data.tradeId)}catch(e){console.error(e);message(e.message||"Could not create the trade.")}
 }
 async function openTrade(id){
   if(!currentUser)return;
@@ -331,35 +339,19 @@ function renderTrade(t,id){
   $("tradeArea").innerHTML=html;watchTradeChat(id);
 }
 async function changeTradeCard(id,card,mine){
-  const snap=await db.collection("trades").doc(id).get();if(!snap.exists)return;const t=snap.data();let arr=[...(mine?t.offered||[]:t.requested||[])],i=arr.indexOf(card);
-  if(i>=0)arr.splice(i,1);else arr.push(card);
-  if(mine&&arr.filter(x=>x===card).length>(inventory[card]||0))return;
-  if(!mine){const p=(window.jessePlayers||[]).find(x=>x.id===t.from);if(arr.filter(x=>x===card).length>((p?.cards||{})[card]||0))return}
-  await db.collection("trades").doc(id).update(mine?{offered:arr}:{requested:arr,updatedAt:firebase.firestore.FieldValue.serverTimestamp()});
+  try{const r=await callFn("toggleTradeCard",{tradeId:id,card});const t=r.data.trade;renderTrade(t,id)}catch(e){console.error(e);message(e.message||"That card could not be changed.")}
 }
 async function sendChat(id){
   const input=$("chatInput");if(!input||!input.value.trim())return;
-  try{await db.collection("trades").doc(id).collection("messages").add({uid:currentUser.uid,name:currentUser.displayName||currentUser.email,text:input.value.trim(),createdAt:firebase.firestore.FieldValue.serverTimestamp()});input.value=""}catch(e){console.error(e);message("Message could not be sent.")}
+  try{await db.collection("trades").doc(id).collection("messages").add({uid:currentUser.uid,name:currentUser.displayName||currentUser.email,text:input.value.trim().slice(0,500),createdAt:firebase.firestore.FieldValue.serverTimestamp()});input.value=""}catch(e){console.error(e);message("Message could not be sent.")}
 }
 function watchTradeChat(id){
   if(tradeChatUnsub)tradeChatUnsub();
   tradeChatUnsub=db.collection("trades").doc(id).collection("messages").orderBy("createdAt").onSnapshot(s=>{const box=$("tradeChat");if(!box)return;box.innerHTML=s.docs.map(d=>{const m=d.data();return `<div class="chat-msg ${m.uid===currentUser.uid?"me":""}"><b>${esc(m.name||"Player")}:</b> ${esc(m.text||"")}</div>`}).join("");box.scrollTop=box.scrollHeight},e=>console.error(e));
 }
-async function finishTrade(id,status){try{await db.collection("trades").doc(id).update({status,updatedAt:firebase.firestore.FieldValue.serverTimestamp()});message("Trade "+status+".")}catch(e){console.error(e);message("Could not update trade status.")}}
+async function finishTrade(id,status){try{await callFn("finishTrade",{tradeId:id,status});message("Trade "+status+".")}catch(e){console.error(e);message(e.message||"Could not update trade status.")}}
 async function acceptTrade(id){
-  try{
-    const ref=db.collection("trades").doc(id);
-    await db.runTransaction(async tx=>{
-      const s=await tx.get(ref);if(!s.exists||s.data().status!=="pending")throw new Error("This trade is no longer pending.");
-      const t=s.data();if(t.to!==currentUser.uid)throw new Error("Only the recipient can accept this trade.");
-      const meRef=db.collection("users").doc(currentUser.uid),fromRef=db.collection("users").doc(t.from);
-      const me=await tx.get(meRef),from=await tx.get(fromRef);const mi={...(me.data()?.cards||{})},fi={...(from.data()?.cards||{})};
-      for(const c of t.offered||[]){if(!fi[c])throw new Error("The sender no longer owns an offered card.");fi[c]--;mi[c]=(mi[c]||0)+1}
-      for(const c of t.requested||[]){if(!mi[c])throw new Error("You no longer own a requested card.");mi[c]--;fi[c]=(fi[c]||0)+1}
-      tx.update(meRef,{cards:mi});tx.update(fromRef,{cards:fi});tx.update(ref,{status:"accepted",updatedAt:firebase.firestore.FieldValue.serverTimestamp()});
-    });
-    const me=await db.collection("users").doc(currentUser.uid).get();inventory=me.data()?.cards||inventory;save();renderCollection();message("Trade accepted.");
-  }catch(e){console.error(e);message(e.message||"Trade could not be accepted.")}
+  try{const r=await callFn("acceptTrade",{tradeId:id});const d=r.data||{};coins=Number(d.coins||coins);inventory=d.cards||inventory;save();renderCollection();message("Trade accepted.")}catch(e){console.error(e);message(e.message||"Trade could not be accepted.")}
 }
 function watchIncomingTrades(){
   if(!currentUser||!firebaseReady)return;
@@ -370,17 +362,15 @@ function watchIncomingTrades(){
 }
 async function authChanged(u){
   currentUser=u;
-  if(!u){
-    $("loggedOut").classList.remove("hidden");$("loggedIn").classList.add("hidden");window.jessePlayers=[];renderPlayers();return;
-  }
-  $("loggedOut").classList.add("hidden");$("loggedIn").classList.remove("hidden");$("accountName").textContent=u.displayName||"Player";$("accountEmail").textContent="("+u.email+")";
-  await loadCloud();await cloudSync();watchPlayers();watchIncomingTrades();
+  if(!u){coins=0;inventory={};save();$("accountGate").classList.remove("hidden");$("loggedOut").classList.remove("hidden");$("loggedIn").classList.add("hidden");window.jessePlayers=[];renderPlayers();return;}
+  $("accountGate").classList.add("hidden");$("gateError").textContent="";$("accountGate").classList.add("hidden");$("loggedOut").classList.add("hidden");$("loggedIn").classList.remove("hidden");$("accountName").textContent=u.displayName||"Player";$("accountEmail").textContent="("+u.email+")";
+  try{await loadCloud();await callFn("setOnline",{online:true});watchPlayers();watchIncomingTrades();}catch(e){console.error(e);message(e.message||"Could not initialize your account.")}
 }
 function setupAuth(){
-  if(!firebaseReady){message("Jesse Cards is running offline. Account features need an internet connection.");return}
+  if(!firebaseReady){message("Jesse Cards needs Firebase for accounts.");return}
   auth.onAuthStateChanged(u=>authChanged(u));
 }
-window.addEventListener("beforeunload",()=>{if(currentUser&&db)db.collection("users").doc(currentUser.uid).set({online:false,lastSeen:firebase.firestore.FieldValue.serverTimestamp()},{merge:true}).catch(()=>{})});
+window.addEventListener("beforeunload",()=>{if(currentUser&&firebaseReady)callFn("setOnline",{online:false}).catch(()=>{})});
 
 /* One delegated click handler for all dynamic controls. */
 document.addEventListener("click",function(e){
@@ -410,14 +400,14 @@ document.addEventListener("click",function(e){
     const email=$("loginEmail").value.trim(),pass=$("loginPassword").value,name=$("loginName").value.trim();
     if(!email||pass.length<6){message("Use an email and a password of at least 6 characters.");return}
     if(!firebaseReady){message("Firebase is not available.");return}
-    auth.createUserWithEmailAndPassword(email,pass).then(c=>c.user.updateProfile({displayName:name||email.split("@")[0]})).then(()=>message("Account created.")).catch(err=>{console.error(err);message(err.message||"Could not create account.")});return
+    auth.createUserWithEmailAndPassword(email,pass).then(c=>c.user.updateProfile({displayName:name||email.split("@")[0]}).then(()=>callFn("setOnline",{online:true,name:name||email.split("@")[0]}))).then(()=>message("Account created.")).catch(err=>{console.error(err);$("gateError").textContent=err.message||"Could not create account."});return
   }
   if(e.target.closest("#loginBtn")){
     if(!firebaseReady){message("Firebase is not available.");return}
-    auth.signInWithEmailAndPassword($("loginEmail").value.trim(),$("loginPassword").value).catch(err=>{console.error(err);message(err.message||"Could not log in.")});return
+    auth.signInWithEmailAndPassword($("loginEmail").value.trim(),$("loginPassword").value).catch(err=>{console.error(err);$("gateError").textContent=err.message||"Could not log in."});return
   }
   if(e.target.closest("#logoutBtn")){if(currentUser)auth.signOut();return}
-  if(e.target.closest("#resetData")){if(confirm("Reset all Jesse Cards coins and cards?")){coins=500;inventory={};save();renderCollection();cloudSync();message("Jesse Cards data reset.")}return}
+  if(e.target.closest("#resetData")){if(confirm("Reset all Jesse Cards coins and cards? This cannot be undone.")){callFn("resetAccount").then(r=>{coins=Number(r.data.coins||0);inventory={};save();renderCollection();message("Jesse Cards account reset.")}).catch(e=>message(e.message||"Could not reset account."))}return}
 });
 
 $("qty").addEventListener("input",updatePrice);
